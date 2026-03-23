@@ -3,6 +3,5 @@ opencv-python-headless
 numpy
 Pillow
 streamlit-cropper
-google-genai
-pyairtable
 PyMuPDF
+requests
