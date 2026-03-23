@@ -65,7 +65,7 @@ if uploaded_file is not None:
                 count += 1
 
         st.success(f"Foram encontrados **{count}** itens na planta!")
-        st.image(cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB), use_column_width=True)
+        st.image(cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB), use_column_width=False, output_format="PNG")
         st.session_state['quantidade_itens'] = count
 
 if 'quantidade_itens' in st.session_state:
