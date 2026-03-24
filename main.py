@@ -6,15 +6,14 @@ import fitz
 import io
 import requests
 import urllib.parse
-import gc
 import pandas as pd
 from streamlit_drawable_canvas import st_canvas
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ==========================================
-# 1. CONFIGURAÇÃO
+# CONFIG
 # ==========================================
-st.set_page_config(layout="wide", page_title="Orçamento IA v2.4")
+st.set_page_config(layout="wide", page_title="Orçamento IA v2.5")
 
 def get_clean_secret(key_name):
     try:
@@ -22,16 +21,11 @@ def get_clean_secret(key_name):
     except:
         return None
 
-def pil_to_bytes(img):
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
 AIRTABLE_API_KEY = get_clean_secret("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = get_clean_secret("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = get_clean_secret("AIRTABLE_TABLE_NAME")
 
-# Sessão
+# SESSION
 if 'total_itens' not in st.session_state:
     st.session_state['total_itens'] = 0
 if 'mapa_resultado' not in st.session_state:
@@ -42,9 +36,9 @@ if 'carrinho' not in st.session_state:
 st.title("Sistema de Orçamento Automatizado - IA 🚀")
 
 # ==========================================
-# 2. UPLOAD
+# UPLOAD
 # ==========================================
-uploaded_file = st.file_uploader("Suba a sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Suba a sua Planta", type=["pdf", "jpg", "png", "jpeg"])
 
 if uploaded_file:
 
@@ -62,35 +56,33 @@ if uploaded_file:
 
     image_high_res = st.session_state['img_high']
 
-    largura_canvas = 1000
-    fator_escala = largura_canvas / float(image_high_res.size[0])
-    altura_canvas = int(float(image_high_res.size[1]) * fator_escala)
+    largura = 1000
+    fator = largura / image_high_res.size[0]
+    altura = int(image_high_res.size[1] * fator)
 
-    image_display = image_high_res.resize(
-        (largura_canvas, altura_canvas),
-        Image.Resampling.LANCZOS
-    )
-
-    # 🔥 CORREÇÃO DEFINITIVA
-    image_bytes = pil_to_bytes(image_display)
-    image_safe = Image.open(io.BytesIO(image_bytes))
+    image_display = image_high_res.resize((largura, altura), Image.Resampling.LANCZOS)
 
     st.markdown("---")
 
     # ==========================================
-    # 3. ROI
+    # ROI VISUAL + CANVAS
     # ==========================================
-    st.subheader("1. Selecione a área de projeto (Ignore legendas)")
-    st.info("💡 Desenhe um retângulo sobre a planta")
+    st.subheader("1. Selecione a área da planta")
+    st.info("💡 Primeiro olhe a imagem. Depois desenhe o retângulo EXATAMENTE na mesma posição abaixo.")
+
+    # imagem visível
+    st.image(image_display, use_container_width=True)
+
+    st.markdown("### ✏️ Agora desenhe aqui (mesma posição da imagem acima)")
 
     canvas_result = st_canvas(
-        fill_color="rgba(255, 0, 0, 0.1)",
+        fill_color="rgba(255, 0, 0, 0.15)",
         stroke_width=2,
         stroke_color="#FF0000",
-        background_image=image_safe,  # 🔥 AQUI ESTÁ O FIX
+        background_color="rgba(0,0,0,0)",
         update_streamlit=True,
-        height=altura_canvas,
-        width=largura_canvas,
+        height=altura,
+        width=largura,
         drawing_mode="rect",
         key="canvas_ok",
     )
@@ -101,136 +93,110 @@ if uploaded_file:
         rect = canvas_result.json_data["objects"][-1]
 
         roi_coords = (
-            int(rect["left"] / fator_escala),
-            int(rect["top"] / fator_escala),
-            int(rect["width"] / fator_escala),
-            int(rect["height"] / fator_escala)
+            int(rect["left"] / fator),
+            int(rect["top"] / fator),
+            int(rect["width"] / fator),
+            int(rect["height"] / fator)
         )
 
-        st.success("Área selecionada com sucesso!")
+        st.success("Área selecionada!")
 
     # ==========================================
-    # 4. CLIQUE E DETECÇÃO
+    # CLIQUE + DETECÇÃO
     # ==========================================
     if roi_coords:
         st.markdown("---")
-        st.subheader("2. Clique no símbolo que deseja contar")
+        st.subheader("2. Clique no símbolo")
 
-        coords = streamlit_image_coordinates(image_display, key="click_coord")
+        coords = streamlit_image_coordinates(image_display, key="click")
 
         if coords:
-            x_real = int(coords["x"] / fator_escala)
-            y_real = int(coords["y"] / fator_escala)
+            x_real = int(coords["x"] / fator)
+            y_real = int(coords["y"] / fator)
 
             img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
-            img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
             box = 25
-
-            y1 = max(0, y_real - box)
-            y2 = min(img_cv.shape[0], y_real + box)
-            x1 = max(0, x_real - box)
-            x2 = min(img_cv.shape[1], x_real + box)
-
-            template_gray = img_gray[y1:y2, x1:x2]
+            template = gray[
+                max(0, y_real-box):y_real+box,
+                max(0, x_real-box):x_real+box
+            ]
 
             st.image(
-                cv2.cvtColor(img_cv[y1:y2, x1:x2], cv2.COLOR_BGR2RGB),
-                caption="Alvo Selecionado",
-                width=80
+                cv2.cvtColor(img_cv[y_real-box:y_real+box, x_real-box:x_real+box], cv2.COLOR_BGR2RGB),
+                width=80,
+                caption="Símbolo"
             )
 
-            threshold = st.slider("Sensibilidade", 0.50, 0.95, 0.80)
+            threshold = st.slider("Sensibilidade", 0.5, 0.95, 0.8)
 
-            if st.button("🔍 Iniciar Contagem"):
-
+            if st.button("🔍 Contar símbolos"):
                 xr, yr, wr, hr = roi_coords
-                roi_gray = img_gray[yr:yr+hr, xr:xr+wr]
+                roi = gray[yr:yr+hr, xr:xr+wr]
 
                 pontos = []
 
-                for angulo in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-
-                    t = template_gray if angulo is None else cv2.rotate(template_gray, angulo)
-
-                    res = cv2.matchTemplate(roi_gray, t, cv2.TM_CCOEFF_NORMED)
+                for rot in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+                    t = template if rot is None else cv2.rotate(template, rot)
+                    res = cv2.matchTemplate(roi, t, cv2.TM_CCOEFF_NORMED)
                     loc = np.where(res >= threshold)
 
                     raio = max(t.shape) / 2
 
                     for pt in zip(*loc[::-1]):
-                        pt_g = (pt[0] + xr, pt[1] + yr)
+                        ptg = (pt[0]+xr, pt[1]+yr)
 
-                        if not any(abs(pt_g[0]-p[0]) < raio and abs(pt_g[1]-p[1]) < raio for p in pontos):
-                            pontos.append(pt_g)
-
-                            cv2.rectangle(
-                                img_cv,
-                                pt_g,
-                                (pt_g[0]+t.shape[1], pt_g[1]+t.shape[0]),
-                                (0, 0, 255),
-                                4
-                            )
+                        if not any(abs(ptg[0]-p[0]) < raio and abs(ptg[1]-p[1]) < raio for p in pontos):
+                            pontos.append(ptg)
+                            cv2.rectangle(img_cv, ptg, (ptg[0]+t.shape[1], ptg[1]+t.shape[0]), (0,0,255), 3)
 
                 st.session_state['total_itens'] = len(pontos)
 
-                res_viz = cv2.resize(
-                    img_cv,
-                    (1000, int(img_cv.shape[0]*(1000/img_cv.shape[1])))
-                )
-
-                st.session_state['mapa_resultado'] = cv2.cvtColor(res_viz, cv2.COLOR_BGR2RGB)
+                img_small = cv2.resize(img_cv, (1000, int(img_cv.shape[0]*(1000/img_cv.shape[1]))))
+                st.session_state['mapa_resultado'] = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
 
                 st.rerun()
 
     # ==========================================
-    # 5. RESULTADO + AIRTABLE
+    # RESULTADO + ORÇAMENTO
     # ==========================================
     if st.session_state['mapa_resultado'] is not None:
-
-        st.image(st.session_state['mapa_resultado'], caption="Resultado Final")
+        st.image(st.session_state['mapa_resultado'])
         st.success(f"Quantidade: {st.session_state['total_itens']}")
 
-        prod_nome = st.text_input("Buscar Nome no Airtable")
+        nome = st.text_input("Produto")
 
-        if st.button("Confirmar Item") and prod_nome:
-
+        if st.button("Adicionar") and nome:
             headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
             url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{urllib.parse.quote(AIRTABLE_TABLE_NAME)}"
 
-            dados = requests.get(url, headers=headers).json()
+            data = requests.get(url, headers=headers).json()
 
             preco = next(
-                (
-                    float(r['fields'].get('Preco', 0))
-                    for r in dados.get('records', [])
-                    if prod_nome.lower() in r['fields'].get('Nome', '').lower()
-                ),
-                0.0
+                (float(r['fields'].get('Preco', 0)) for r in data['records']
+                 if nome.lower() in r['fields'].get('Nome', '').lower()),
+                0
             )
 
             st.session_state['carrinho'].append({
-                "Item": prod_nome,
+                "Item": nome,
                 "Qtd": st.session_state['total_itens'],
                 "Unitário": preco,
                 "Total": preco * st.session_state['total_itens']
             })
 
-            st.success("Item adicionado!")
-
     # ==========================================
-    # 6. CARRINHO
+    # CARRINHO
     # ==========================================
     if st.session_state['carrinho']:
-
         st.markdown("---")
-
         df = pd.DataFrame(st.session_state['carrinho'])
         st.table(df)
 
         st.download_button(
-            "📥 Salvar Orçamento",
-            df.to_csv(index=False).encode('utf-8'),
+            "📥 Baixar CSV",
+            df.to_csv(index=False).encode(),
             "orcamento.csv",
             "text/csv"
         )
