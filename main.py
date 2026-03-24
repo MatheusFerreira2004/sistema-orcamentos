@@ -6,7 +6,7 @@ import fitz
 import io
 import requests
 import urllib.parse
-import gc  # <--- O Lixeiro da Memória
+import gc  # Lixeiro de Memória
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ==========================================
@@ -36,21 +36,20 @@ if 'mapa_resultado' not in st.session_state:
     st.session_state['mapa_resultado'] = None
 
 # ==========================================
-# 2. UPLOAD E RESOLUÇÃO OTIMIZADA (ANTI-CRASH)
+# 2. UPLOAD E RESOLUÇÃO OTIMIZADA (PESO-PENA)
 # ==========================================
 uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
 if uploaded_file:
     try:
         if uploaded_file.name.lower().endswith(".pdf"):
-            with st.spinner("Processando PDF..."):
+            with st.spinner("Extraindo PDF (Otimizado para Memória)..."):
                 doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                 page = doc.load_page(0)
-                # REDUZIDO PARA 4x4: Mantém nitidez e salva 60% da memória!
-                pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
+                # Matrix 3x3: Resolução HD (Corta o uso de RAM pela metade!)
+                pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
                 image_high_res = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
                 
-                # Limpa a memória do PDF
                 del doc, page, pix
                 gc.collect() 
         else:
@@ -65,7 +64,7 @@ if uploaded_file:
         image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
 
         # ==========================================
-        # 3. CAPTURA DE FORMA E VARREDURA LEVE
+        # 3. CAPTURA DE FORMA E VARREDURA MULTI-ÂNGULO
         # ==========================================
         coords = streamlit_image_coordinates(image_display, key="mapa_clique")
 
@@ -78,7 +77,7 @@ if uploaded_file:
             st.subheader("2. Ajuste o recorte do seu alvo")
             st.info("🚨 O quadrado abaixo deve conter APENAS o símbolo, sem pegar linhas vizinhas.")
             
-            box_size = st.slider("Tamanho da área de captura", 10, 100, 30)
+            box_size = st.slider("Tamanho da área de captura", 10, 100, 25)
 
             y1, y2 = max(0, y_real - box_size), min(img_cv.shape[0], y_real + box_size)
             x1, x2 = max(0, x_real - box_size), min(img_cv.shape[1], x_real + box_size)
@@ -94,7 +93,7 @@ if uploaded_file:
                 threshold = st.slider("Precisão da Forma (0.90 = Idêntico)", 0.50, 0.99, 0.85, 0.01)
 
                 if st.button("🔍 Procurar em Todos os Ângulos na Planta"):
-                    with st.spinner("Varrendo planta em 360 graus... (Isso pode levar alguns segundos)"):
+                    with st.spinner("Calculando geometria e ângulos..."):
                         
                         pontos = []
                         img_result = img_cv.copy()
@@ -108,8 +107,7 @@ if uploaded_file:
                         
                         raio_seguranca = max(template.shape[0], template.shape[1]) / 2
 
-                        for i, rot_template in enumerate(rotations):
-                            # Executa a busca para este ângulo
+                        for rot_template in rotations:
                             res = cv2.matchTemplate(img_cv, rot_template, cv2.TM_CCOEFF_NORMED)
                             loc = np.where(res >= threshold)
                             h_tmpl, w_tmpl = rot_template.shape[:2]
@@ -117,14 +115,24 @@ if uploaded_file:
                             for pt in zip(*loc[::-1]):
                                 if not any(abs(pt[0]-p[0]) < raio_seguranca and abs(pt[1]-p[1]) < raio_seguranca for p in pontos):
                                     pontos.append(pt)
-                                    cv2.rectangle(img_result, pt, (pt[0] + w_tmpl, pt[1] + h_tmpl), (0, 0, 255), 6)
+                                    cv2.rectangle(img_result, pt, (pt[0] + w_tmpl, pt[1] + h_tmpl), (0, 0, 255), 4)
                             
-                            # LIXEIRO DA MEMÓRIA: Apaga a matriz pesada assim que termina de usá-la!
+                            # Limpeza imediata a cada loop
                             del res, loc
                             gc.collect()
                         
+                        # A GRANDE SACADA DA MEMÓRIA: Reduzir a imagem antes de salvar!
+                        fator_reducao = 1500 / float(img_result.shape[1])
+                        nova_largura = 1500
+                        nova_altura = int(img_result.shape[0] * fator_reducao)
+                        img_result_small = cv2.resize(img_result, (nova_largura, nova_altura), interpolation=cv2.INTER_AREA)
+
                         st.session_state['total_itens'] = len(pontos)
-                        st.session_state['mapa_resultado'] = cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB)
+                        st.session_state['mapa_resultado'] = cv2.cvtColor(img_result_small, cv2.COLOR_BGR2RGB)
+
+                        # Limpa as imagens gigantes da memória do servidor
+                        del img_cv, img_result, image_high_res
+                        gc.collect()
 
         # ==========================================
         # 4. RESULTADO E INTEGRAÇÃO AIRTABLE
