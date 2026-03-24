@@ -1,10 +1,10 @@
-streamlit
+streamlit==1.31.0
 opencv-python-headless
 numpy
 Pillow
 pymupdf
 requests
 streamlit-image-coordinates
-streamlit-drawable-canvas>=0.9.3
+streamlit-drawable-canvas
 pandas
 openpyxl
