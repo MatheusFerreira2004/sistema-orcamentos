@@ -35,7 +35,7 @@ if 'mapa_resultado' not in st.session_state:
     st.session_state['mapa_resultado'] = None
 
 # ==========================================
-# 2. UPLOAD E ALTA RESOLUÇÃO (MATRIX 6)
+# 2. UPLOAD E ALTA RESOLUÇÃO
 # ==========================================
 uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
@@ -45,126 +45,71 @@ if uploaded_file:
             with st.spinner("Processando PDF em alta resolução..."):
                 doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                 page = doc.load_page(0)
-                # VOLTAMOS PARA 6x6 PARA NÃO PIXELAR!
                 pix = page.get_pixmap(matrix=fitz.Matrix(6, 6))
                 image_high_res = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
         else:
             image_high_res = Image.open(uploaded_file).convert("RGB")
 
         st.markdown("---")
-        st.subheader("1. Clique no símbolo que deseja contar na planta abaixo:")
-        st.info("A planta se ajustará à sua tela automaticamente. Clique no centro da cor.")
+        st.subheader("1. Clique BEM NO CENTRO do símbolo que deseja contar:")
         
-        # --- A MÁGICA DA TELA RESPONSIVA ---
         largura_tela = 1000 
         fator_escala = largura_tela / float(image_high_res.size[0])
         altura_tela = int(float(image_high_res.size[1]) * float(fator_escala))
         image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
 
         # ==========================================
-        # 3. CAPTURA DE COORDENADA (A PRÉ-VISUALIZAÇÃO AQUI)
+        # 3. CAPTURA DE FORMA (MOTOR DE TEMPLATE MATCHING)
         # ==========================================
         coords = streamlit_image_coordinates(image_display, key="mapa_clique")
 
         if coords:
-            # Converte clique da tela para a imagem gigante
             x_real = int(coords["x"] / fator_escala)
             y_real = int(coords["y"] / fator_escala)
 
             img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
 
-            # Extrai a cor usando uma pequena média para não pegar linha preta
-            region = img_cv[max(0, y_real-5):min(img_cv.shape[0], y_real+5), max(0, x_real-5):min(img_cv.shape[1], x_real+5)]
-            avg_color = np.mean(region, axis=(0,1)).astype(int)
-
-            pixel = np.uint8([[avg_color]])
-            hsv_pixel = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)
-            h, s, v = int(hsv_pixel[0][0][0]), int(hsv_pixel[0][0][1]), int(hsv_pixel[0][0][2])
-
-            # --- O NOVO RECURSO DE PRÉ-VISUALIZAÇÃO DO ALVO ---
-            col_target, col_info = st.columns([1, 4])
-            with col_target:
-                # Recorta um quadrado de 100x100 ao redor de onde você clicou para você ter certeza
-                box_size = 50
-                y1, y2 = max(0, y_real-box_size), min(img_cv.shape[0], y_real+box_size)
-                x1, x2 = max(0, x_real-box_size), min(img_cv.shape[1], x_real+box_size)
-                alvo_img = img_cv[y1:y2, x1:x2]
-                st.image(cv2.cvtColor(alvo_img, cv2.COLOR_BGR2RGB), caption="Seu Alvo", width=100)
+            st.subheader("2. Ajuste o recorte do seu alvo")
+            st.info("🚨 IMPORTANTE: O quadrado recortado abaixo deve conter APENAS o símbolo azul, sem pegar linhas vermelhas ou pretas ao redor.")
             
-            with col_info:
-                st.write(f"**Coordenada:** {x_real}, {y_real}")
-                st.write(f"🎨 **Cor HSV Capturada:** H={h}, S={s}, V={v}")
+            box_size = st.slider("Tamanho da área de captura", 10, 100, 30)
 
-            # ==========================================
-            # 4. PAINEL DE AJUSTES (O NOSSO MOTOR ESTÁVEL)
-            # ==========================================
-            st.subheader("2. Ajustes da detecção geométrica")
+            y1, y2 = max(0, y_real - box_size), min(img_cv.shape[0], y_real + box_size)
+            x1, x2 = max(0, x_real - box_size), min(img_cv.shape[1], x_real + box_size)
+            
+            template = img_cv[y1:y2, x1:x2]
 
-            col1, col2 = st.columns(2)
-            with col1:
-                h_range = st.slider("Tolerância de Cor (Hue)", 5, 40, 15)
-                s_min = st.slider("Ignorar cinza (Sat Mínima)", 0, 255, 40)
-                v_min = st.slider("Ignorar escuro (Val Mínimo)", 0, 255, 40)
-            with col2:
-                min_area = st.slider("Área mínima (Poeira)", 10, 500, 80)
-                max_area = st.slider("Área máxima (Legendas)", 100, 15000, 1500)
-                ratio_min = st.slider("Proporção mínima (larg/alt)", 0.1, 1.0, 0.3)
-                ratio_max = st.slider("Proporção máxima (larg/alt)", 1.0, 20.0, 5.0)
-                extent_min = st.slider("Preenchimento mínimo", 0.1, 1.0, 0.4)
+            col_target, col_config = st.columns([1, 3])
+            
+            with col_target:
+                st.image(cv2.cvtColor(template, cv2.COLOR_BGR2RGB), caption="Símbolo Capturado", width=150)
+            
+            with col_config:
+                threshold = st.slider("Precisão da Forma (0.90 = Idêntico)", 0.50, 0.99, 0.85, 0.01)
 
-            lower = np.array([max(0, h - h_range), s_min, v_min])
-            upper = np.array([min(179, h + h_range), 255, 255])
-
-            if st.button("🔍 Iniciar Varredura de Cor na Planta"):
-                with st.spinner("Analisando com Inteligência de Cores e Contornos..."):
-
-                    hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-                    mask = cv2.inRange(hsv, lower, upper)
-
-                    kernel = np.ones((3,3), np.uint8)
-                    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-                    count = 0
-                    img_result = img_cv.copy()
-
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
-                        if area < min_area or area > max_area:
-                            continue
-
-                        x_box, y_box, w_box, h_box = cv2.boundingRect(cnt)
-                        if h_box == 0:
-                            continue
-                            
-                        ratio = float(w_box) / float(h_box)
-                        ratio_invertido = float(h_box) / float(w_box)
+                if st.button("🔍 Procurar Forma Exata na Planta"):
+                    with st.spinner("Analisando por similaridade de desenho..."):
                         
-                        if not ((ratio_min < ratio < ratio_max) or (ratio_min < ratio_invertido < ratio_max)):
-                            continue
-
-                        rect_area = w_box * h_box
-                        if rect_area == 0:
-                            continue
-                            
-                        extent = float(area) / float(rect_area)
-                        if extent < extent_min:
-                            continue
-
-                        count += 1
-                        cv2.rectangle(img_result, (x_box, y_box), (x_box+w_box, y_box+h_box), (0, 0, 255), 6)
-
-                    st.session_state['total_itens'] = count
-                    st.session_state['mapa_resultado'] = cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB)
+                        res = cv2.matchTemplate(img_cv, template, cv2.TM_CCOEFF_NORMED)
+                        loc = np.where(res >= threshold)
+                        
+                        pontos = []
+                        img_result = img_cv.copy()
+                        h_tmpl, w_tmpl = template.shape[:2]
+                        
+                        for pt in zip(*loc[::-1]):
+                            if not any(abs(pt[0]-p[0]) < w_tmpl/2 and abs(pt[1]-p[1]) < h_tmpl/2 for p in pontos):
+                                pontos.append(pt)
+                                cv2.rectangle(img_result, pt, (pt[0] + w_tmpl, pt[1] + h_tmpl), (0, 0, 255), 6)
+                        
+                        st.session_state['total_itens'] = len(pontos)
+                        st.session_state['mapa_resultado'] = cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB)
 
         # ==========================================
-        # 5. RESULTADO E INTEGRAÇÃO AIRTABLE
+        # 4. RESULTADO E AIRTABLE
         # ==========================================
         if st.session_state['mapa_resultado'] is not None:
-            st.success(f"✅ Encontrados {st.session_state['total_itens']} itens legítimos!")
-            # AQUI ESTÁ A CORREÇÃO DE CORTE: use_container_width=True
+            st.success(f"✅ O robô encontrou {st.session_state['total_itens']} itens com este exato formato!")
             st.image(st.session_state['mapa_resultado'], use_container_width=True)
 
             st.markdown("---")
