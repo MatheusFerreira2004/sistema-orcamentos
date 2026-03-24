@@ -5,6 +5,6 @@ Pillow
 pymupdf
 requests
 streamlit-image-coordinates
-streamlit-drawable-canvas
+streamlit-drawable-canvas>=0.9.3
 pandas
 openpyxl
