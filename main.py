@@ -7,7 +7,7 @@ import io
 import requests
 import urllib.parse
 import gc
-import pandas as pd  # <--- NOVA BIBLIOTECA PARA A TABELA DO CARRINHO
+import pandas as pd
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ==========================================
@@ -135,7 +135,6 @@ if uploaded_file:
                         st.session_state['total_itens'] = len(pontos)
                         st.session_state['mapa_resultado'] = cv2.cvtColor(img_result_small, cv2.COLOR_BGR2RGB)
                         
-                        # Limpa o produto atual se fizer uma nova busca
                         st.session_state['produto_atual'] = None
 
                         del img_cv, img_gray, img_result, image_high_res
@@ -191,7 +190,6 @@ if uploaded_file:
 
                             total_orcamento = preco * total_final
 
-                            # Salva na memória temporária para podermos adicionar ao carrinho depois
                             st.session_state['produto_atual'] = {
                                 "Produto": nome_real,
                                 "Quantidade": total_final,
@@ -218,21 +216,19 @@ if uploaded_file:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("🛒 Adicionar item ao Orçamento Geral", type="primary"):
                     st.session_state['carrinho'].append(prod)
-                    st.session_state['produto_atual'] = None # Limpa a memória temporária
+                    st.session_state['produto_atual'] = None 
                     st.success("Item adicionado com sucesso! Role a página para baixo para ver o Orçamento Geral.")
-                    st.rerun() # Atualiza a tela
+                    st.rerun() 
 
         # ==========================================
-        # 6. O CARRINHO DE ORÇAMENTO (TABELA FINAL)
+        # 6. O CARRINHO DE ORÇAMENTO E EXCEL (TABELA FINAL)
         # ==========================================
         st.markdown("---")
         st.header("📋 Orçamento Geral do Projeto")
         
         if len(st.session_state['carrinho']) > 0:
-            # Cria a tabela bonita com o Pandas
             df_carrinho = pd.DataFrame(st.session_state['carrinho'])
             
-            # Formatação visual da tabela
             st.dataframe(
                 df_carrinho.style.format({
                     "Preço Unitário (R$)": "{:.2f}",
@@ -241,13 +237,29 @@ if uploaded_file:
                 use_container_width=True
             )
 
-            # Cálculo do Custo Total da Obra
             total_geral = df_carrinho["Subtotal (R$)"].sum()
             st.subheader(f"💰 CUSTO TOTAL: R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-            if st.button("🗑️ Limpar Orçamento e Começar de Novo"):
-                st.session_state['carrinho'] = []
-                st.rerun()
+            # --- A MÁGICA DO EXCEL ---
+            col_excel, col_limpar = st.columns([1, 1])
+            
+            with col_excel:
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_carrinho.to_excel(writer, index=False, sheet_name='Orçamento')
+                
+                st.download_button(
+                    label="📊 Baixar Orçamento em Excel",
+                    data=buffer.getvalue(),
+                    file_name="orcamento_projeto.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+
+            with col_limpar:
+                if st.button("🗑️ Limpar Orçamento e Começar de Novo"):
+                    st.session_state['carrinho'] = []
+                    st.rerun()
         else:
             st.info("O seu carrinho está vazio. Escaneie os símbolos na planta e adicione-os aqui.")
 
