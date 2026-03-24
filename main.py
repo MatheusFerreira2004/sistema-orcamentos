@@ -35,7 +35,7 @@ if 'mapa_resultado' not in st.session_state:
     st.session_state['mapa_resultado'] = None
 
 # ==========================================
-# 2. UPLOAD E REDIMENSIONAMENTO
+# 2. UPLOAD E REDIMENSIONAMENTO (O Zoom Responsivo)
 # ==========================================
 uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
@@ -53,14 +53,14 @@ if uploaded_file:
         st.markdown("---")
         st.subheader("1. Clique no símbolo que deseja contar na planta abaixo:")
         
-        # --- Evita que a imagem quebre a tela ---
+        # --- Evita que a imagem quebre a tela, mas mantém a alta resolução para o robô ---
         largura_tela = 1000 
         fator_escala = largura_tela / float(image_high_res.size[0])
         altura_tela = int(float(image_high_res.size[1]) * float(fator_escala))
         image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
 
         # ==========================================
-        # 3. CAPTURA DE COORDENADA E COR
+        # 3. CAPTURA DE COORDENADA E COR (Média Segura)
         # ==========================================
         coords = streamlit_image_coordinates(image_display, key="mapa_clique")
 
@@ -71,30 +71,33 @@ if uploaded_file:
 
             img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
 
-            b, g, r = img_cv[y_real, x_real]
-            pixel = np.uint8([[[b, g, r]]])
+            # Usa a "Média de Cor" do código novo, que é uma ideia excelente para evitar pegar um pixel preto por acidente
+            region = img_cv[max(0, y_real-5):min(img_cv.shape[0], y_real+5), max(0, x_real-5):min(img_cv.shape[1], x_real+5)]
+            avg_color = np.mean(region, axis=(0,1)).astype(int)
+
+            pixel = np.uint8([[avg_color]])
             hsv_pixel = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)
 
-            # --- CORREÇÃO DO BUG MATEMÁTICO ---
             h, s, v = int(hsv_pixel[0][0][0]), int(hsv_pixel[0][0][1]), int(hsv_pixel[0][0][2])
 
-            st.write(f"🎨 HSV detectado: H={h}, S={s}, V={v}")
+            st.write(f"🎨 HSV detectado (Média 10x10px): H={h}, S={s}, V={v}")
 
             # ==========================================
-            # 4. PAINEL DE AJUSTES (COM SUA LÓGICA NOVA)
+            # 4. PAINEL DE AJUSTES (OS SLIDERS VOLTARAM!)
             # ==========================================
             st.subheader("2. Ajustes da detecção geométrica")
+            st.info("💡 **Dica para perfis de LED:** Se for um item longo, aumente a **Área máxima** e a **Proporção máxima**.")
 
             col1, col2 = st.columns(2)
             with col1:
-                h_range = st.slider("Range de Hue (Tolerância de Cor)", 5, 40, 10)
-                s_min = st.slider("Saturação mínima (Ignora cinza)", 0, 255, 50)
-                v_min = st.slider("Valor mínimo (Ignora escuro)", 0, 255, 50)
+                h_range = st.slider("Range de Hue (Tolerância de Cor)", 5, 40, 15) # Aumentei o padrão para 15
+                s_min = st.slider("Saturação mínima (Ignora cinza)", 0, 255, 40) # Baixei para 40
+                v_min = st.slider("Valor mínimo (Ignora escuro)", 0, 255, 40)
             with col2:
                 min_area = st.slider("Área mínima (Poeira)", 10, 500, 80)
-                max_area = st.slider("Área máxima (Legendas)", 100, 5000, 1500)
-                ratio_min = st.slider("Proporção mínima (larg/alt)", 0.3, 1.0, 0.5)
-                ratio_max = st.slider("Proporção máxima (larg/alt)", 1.0, 3.0, 1.5)
+                max_area = st.slider("Área máxima (Legendas/Blocos)", 100, 15000, 1500) # Limite bem maior para perfis
+                ratio_min = st.slider("Proporção mínima (larg/alt)", 0.1, 1.0, 0.3) # Começa menor
+                ratio_max = st.slider("Proporção máxima (larg/alt)", 1.0, 20.0, 5.0) # Permite itens longos (perfil led)
                 extent_min = st.slider("Preenchimento mínimo", 0.1, 1.0, 0.4)
 
             lower = np.array([max(0, h - h_range), s_min, v_min])
@@ -115,7 +118,6 @@ if uploaded_file:
                     count = 0
                     img_result = img_cv.copy()
 
-                    # --- A SUA LÓGICA EXCELENTE AQUI ---
                     for cnt in contours:
                         area = cv2.contourArea(cnt)
 
@@ -124,12 +126,15 @@ if uploaded_file:
 
                         x_box, y_box, w_box, h_box = cv2.boundingRect(cnt)
 
-                        # Impede divisão por zero por segurança
                         if h_box == 0:
                             continue
                             
+                        # A Proporção agora aceita itens compridos (se você ajustar no slider)
                         ratio = float(w_box) / float(h_box)
-                        if ratio < ratio_min or ratio > ratio_max:
+                        # Para perfis longos, o w pode ser menor que o h (linha vertical), então verificamos os dois lados
+                        ratio_invertido = float(h_box) / float(w_box)
+                        
+                        if not ((ratio_min < ratio < ratio_max) or (ratio_min < ratio_invertido < ratio_max)):
                             continue
 
                         rect_area = w_box * h_box
