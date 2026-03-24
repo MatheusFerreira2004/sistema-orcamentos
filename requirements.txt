@@ -6,3 +6,4 @@ pymupdf
 requests
 streamlit-cropper
 streamlit-image-coordinates
+pandas
