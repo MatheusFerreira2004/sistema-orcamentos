@@ -2,8 +2,7 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
-streamlit-cropper
-PyMuPDF
+pymupdf
 requests
 streamlit-cropper
 streamlit-image-coordinates
