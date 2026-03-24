@@ -10,13 +10,22 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # CONFIG
 # ================================
 st.set_page_config(layout="wide")
-st.title("Sistema de Orçamento Inteligente 🚀")
+st.title("Sistema Inteligente de Leitura de Plantas 🚀")
 
 # ================================
 # MEMÓRIA
 # ================================
+if "boxes" not in st.session_state:
+    st.session_state["boxes"] = []
+
+if "pre_map_img" not in st.session_state:
+    st.session_state["pre_map_img"] = None
+
 if "result_img" not in st.session_state:
     st.session_state["result_img"] = None
+
+if "click" not in st.session_state:
+    st.session_state["click"] = None
 
 # ================================
 # UPLOAD
@@ -26,14 +35,14 @@ uploaded_file = st.file_uploader("Suba sua planta", type=["pdf","png","jpg","jpe
 if uploaded_file:
 
     # ================================
-    # CARREGAR EM ALTA QUALIDADE
+    # CARREGAMENTO OTIMIZADO
     # ================================
     if uploaded_file.name.endswith(".pdf"):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         page = doc.load_page(0)
 
-        # 🔥 equilíbrio qualidade x performance
-        pix = page.get_pixmap(matrix=fitz.Matrix(4,4))
+        # 🔥 equilíbrio perfeito (sem travar)
+        pix = page.get_pixmap(matrix=fitz.Matrix(3,3))
         image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
     else:
         image = Image.open(uploaded_file).convert("RGB")
@@ -41,142 +50,146 @@ if uploaded_file:
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
     # ================================
-    # ESCALA VISUAL (SEM PERDER QUALIDADE)
+    # EXIBIÇÃO (SEM CORTAR / SEM PIXELAR)
     # ================================
-    st.subheader("Visualização")
+    st.subheader("1. Visualização da planta")
 
-    scale_display = st.slider(
-        "Escala da imagem (qualidade vs performance)",
-        0.3, 1.0, 0.7
-    )
+    scale_display = st.slider("Escala da imagem", 0.5, 1.0, 0.8)
 
     display_w = int(image.width * scale_display)
     display_h = int(image.height * scale_display)
 
     image_display = image.resize(
         (display_w, display_h),
-        Image.Resampling.LANCZOS  # 🔥 alta qualidade
+        Image.Resampling.LANCZOS
     )
 
-    # ================================
-    # CLIQUE PRECISO
-    # ================================
-    coords = streamlit_image_coordinates(image_display)
+    coords = streamlit_image_coordinates(image_display, key="map")
 
-    st.image(image_display, caption="Clique no símbolo")
+    st.image(image_display, use_container_width=True)
 
+    # ================================
+    # SALVAR CLIQUE
+    # ================================
     if coords:
-
-        # converter clique para imagem original
         x_real = int(coords["x"] / scale_display)
         y_real = int(coords["y"] / scale_display)
+        st.session_state["click"] = (x_real, y_real)
+        st.success(f"Clique salvo: {x_real}, {y_real}")
 
-        # segurança borda
-        x_real = max(5, min(x_real, image.width-5))
-        y_real = max(5, min(y_real, image.height-5))
+    # ================================
+    # PRÉ-MAPEAMENTO
+    # ================================
+    st.subheader("2. Pré-mapeamento da planta")
 
-        # ================================
-        # MÉDIA DE COR (ESTÁVEL)
-        # ================================
-        region = img_cv[y_real-5:y_real+5, x_real-5:x_real+5]
-        avg_color = np.mean(region, axis=(0,1)).astype(int)
+    if st.button("🔍 Mapear todos elementos"):
 
-        hsv_pixel = cv2.cvtColor(np.uint8([[avg_color]]), cv2.COLOR_BGR2HSV)
-        h,s,v = map(int, hsv_pixel[0][0])
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-        st.write(f"HSV detectado: {h}, {s}, {v}")
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # ================================
-        # AJUSTES
-        # ================================
-        col1, col2 = st.columns(2)
+        kernel = np.ones((3,3), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, 1)
 
-        with col1:
-            h_range = st.slider("Hue Range", 5, 40, 15)
-            min_area = st.slider("Área mínima", 50, 500, 120)
+        # remover linhas longas
+        lines = cv2.HoughLinesP(gray,1,np.pi/180,100,minLineLength=120,maxLineGap=10)
 
-        with col2:
-            max_area = st.slider("Área máxima", 200, 2000, 800)
-            aspect_limit = st.slider("Filtro linha", 2.0, 6.0, 3.0)
+        if lines is not None:
+            for line in lines:
+                x1,y1,x2,y2 = line[0]
+                cv2.line(thresh,(x1,y1),(x2,y2),0,10)
 
-        lower = np.array([max(0, h-h_range), 60, 60])
-        upper = np.array([min(179, h+h_range), 255, 255])
+        contours,_ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # ================================
-        # DETECTAR
-        # ================================
-        if st.button("🔍 Detectar símbolos"):
+        boxes = []
+        result = img_cv.copy()
 
-            hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, lower, upper)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
 
-            # suavização
-            mask = cv2.GaussianBlur(mask, (5,5), 0)
-            _, mask = cv2.threshold(mask, 120, 255, cv2.THRESH_BINARY)
+            if area < 80 or area > 2000:
+                continue
 
-            # morfologia
-            kernel = np.ones((5,5), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, 2)
+            x,y,w,h = cv2.boundingRect(cnt)
 
-            # ================================
-            # REMOVER LINHAS (LED)
-            # ================================
-            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-            lines = cv2.HoughLinesP(gray,1,np.pi/180,100,minLineLength=120,maxLineGap=10)
+            aspect = max(w,h)/(min(w,h)+1)
 
-            if lines is not None:
-                for line in lines:
-                    x1,y1,x2,y2 = line[0]
-                    cv2.line(mask,(x1,y1),(x2,y2),0,12)
+            if aspect > 4:
+                continue
 
-            # ================================
-            # CONTORNOS
-            # ================================
-            contours,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # ignorar legenda (parte inferior)
+            if y > img_cv.shape[0] * 0.85:
+                continue
 
-            result = img_cv.copy()
-            centers = []
-            count = 0
+            boxes.append((x,y,w,h))
 
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
+            cv2.rectangle(result,(x,y),(x+w,y+h),(0,0,255),2)
 
-                if area < min_area or area > max_area:
-                    continue
+        st.session_state["boxes"] = boxes
 
-                x,y,w,h = cv2.boundingRect(cnt)
+        # reduzir imagem para exibir leve
+        result_small = cv2.resize(result, (1000, int(1000*result.shape[0]/result.shape[1])))
+        st.session_state["pre_map_img"] = result_small
 
-                aspect = max(w,h)/(min(w,h)+1)
-                if aspect > aspect_limit:
-                    continue
+        st.success(f"{len(boxes)} elementos detectados")
 
-                cx = x + w//2
-                cy = y + h//2
+    # ================================
+    # MOSTRAR PRÉ-MAPEAMENTO
+    # ================================
+    if st.session_state["pre_map_img"] is not None:
+        st.image(cv2.cvtColor(st.session_state["pre_map_img"], cv2.COLOR_BGR2RGB))
 
-                duplicate = False
-                for px,py in centers:
-                    if abs(cx-px)<20 and abs(cy-py)<20:
-                        duplicate = True
-                        break
+    # ================================
+    # DETECÇÃO POR SIMILARIDADE
+    # ================================
+    st.subheader("3. Detectar similares")
 
-                if duplicate:
-                    continue
+    if st.session_state["click"] and st.session_state["boxes"]:
 
-                centers.append((cx,cy))
-                count += 1
+        if st.button("🎯 Detectar itens iguais ao clicado"):
 
-                cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),3)
+            x_click, y_click = st.session_state["click"]
 
-            # ================================
-            # EXIBIÇÃO LEVE FINAL
-            # ================================
-            result_small = cv2.resize(
-                result,
-                (int(result.shape[1]*0.5), int(result.shape[0]*0.5))
-            )
+            selected_box = None
 
-            st.session_state["result_img"] = result_small
-            st.success(f"{count} itens encontrados")
+            for (x,y,w,h) in st.session_state["boxes"]:
+                if x < x_click < x+w and y < y_click < y+h:
+                    selected_box = (x,y,w,h)
+                    break
+
+            if selected_box:
+
+                x_ref, y_ref, w_ref, h_ref = selected_box
+
+                result = img_cv.copy()
+                count = 0
+
+                for (x,y,w,h) in st.session_state["boxes"]:
+
+                    if abs(w - w_ref) > 10:
+                        continue
+
+                    if abs(h - h_ref) > 10:
+                        continue
+
+                    ratio1 = w / (h+1)
+                    ratio2 = w_ref / (h_ref+1)
+
+                    if abs(ratio1 - ratio2) > 0.3:
+                        continue
+
+                    count += 1
+
+                    cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),3)
+
+                result_small = cv2.resize(result, (1000, int(1000*result.shape[0]/result.shape[1])))
+
+                st.session_state["result_img"] = result_small
+
+                st.success(f"{count} itens encontrados")
+
+            else:
+                st.warning("Clique não corresponde a um símbolo detectado")
 
     # ================================
     # RESULTADO FINAL
