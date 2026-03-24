@@ -8,3 +8,4 @@ streamlit-cropper
 streamlit-image-coordinates
 pandas
 openpyxl
+streamlit-drawable-canvas
