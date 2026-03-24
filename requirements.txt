@@ -4,8 +4,7 @@ numpy
 Pillow
 pymupdf
 requests
-streamlit-cropper
 streamlit-image-coordinates
+streamlit-drawable-canvas
 pandas
 openpyxl
-streamlit-drawable-canvas
