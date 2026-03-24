@@ -7,3 +7,4 @@ requests
 streamlit-cropper
 streamlit-image-coordinates
 pandas
+openpyxl
