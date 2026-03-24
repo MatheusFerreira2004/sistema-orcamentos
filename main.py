@@ -8,12 +8,13 @@ import requests
 import urllib.parse
 import gc
 import pandas as pd
+from streamlit_drawable_canvas import st_canvas
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ==========================================
 # 1. CONFIGURAÇÃO INICIAL E MEMÓRIA
 # ==========================================
-st.set_page_config(layout="wide", page_title="Orçamento IA - Goiânia")
+st.set_page_config(layout="wide", page_title="Orçamento IA - Versão 2.0")
 
 def get_clean_secret(key_name):
     try:
@@ -31,7 +32,6 @@ if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
     st.error("⚠️ Erro: Chaves do Airtable não encontradas nos Secrets.")
     st.stop()
 
-# Inicialização das Memórias do Robô
 if 'total_itens' not in st.session_state:
     st.session_state['total_itens'] = 0
 if 'mapa_resultado' not in st.session_state:
@@ -44,12 +44,12 @@ if 'produto_atual' not in st.session_state:
 # ==========================================
 # 2. UPLOAD E RESOLUÇÃO ULTRA-LEVE
 # ==========================================
-uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Suba a sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
 if uploaded_file:
     try:
         if uploaded_file.name.lower().endswith(".pdf"):
-            with st.spinner("Extraindo PDF (Modo de Baixo Consumo de Memória)..."):
+            with st.spinner("A extrair o PDF (Modo de Baixo Consumo de Memória)..."):
                 doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                 page = doc.load_page(0)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -61,7 +61,6 @@ if uploaded_file:
             image_high_res = Image.open(uploaded_file).convert("RGB")
 
         st.markdown("---")
-        st.subheader("1. Clique BEM NO CENTRO do símbolo que deseja contar:")
         
         largura_tela = 1000 
         fator_escala = largura_tela / float(image_high_res.size[0])
@@ -69,19 +68,53 @@ if uploaded_file:
         image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
 
         # ==========================================
-        # 3. CAPTURA DE FORMA (MOTOR EM TONS DE CINZA)
+        # 3. SELEÇÃO DE ÁREA (ROI COM CANVAS)
         # ==========================================
+        st.subheader("1. Isole a área de projeto (Desenhe um retângulo)")
+        st.info("Deixe de fora a legenda, os carimbos e anotações laterais do arquiteto.")
+
+        canvas_result = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#FF0000",
+            background_image=image_display,
+            update_streamlit=True,
+            height=altura_tela,
+            width=largura_tela,
+            drawing_mode="rect",
+            key="canvas",
+        )
+
+        roi_coords = None
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data["objects"]
+            if len(objects) > 0:
+                rect = objects[-1]
+                x_roi = int(rect["left"] / fator_escala)
+                y_roi = int(rect["top"] / fator_escala)
+                w_roi = int(rect["width"] / fator_escala)
+                h_roi = int(rect["height"] / fator_escala)
+
+                roi_coords = (x_roi, y_roi, w_roi, h_roi)
+                st.success("✅ Área da planta isolada com sucesso!")
+
+        # ==========================================
+        # 4. CAPTURA DE FORMA (CLIQUE NO ALVO)
+        # ==========================================
+        st.markdown("---")
+        st.subheader("2. Clique no símbolo que deseja contar:")
+
         coords = streamlit_image_coordinates(image_display, key="mapa_clique")
 
-        if coords:
+        if coords and roi_coords:
             x_real = int(coords["x"] / fator_escala)
             y_real = int(coords["y"] / fator_escala)
 
             img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
             img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY) 
 
-            st.subheader("2. Ajuste o recorte do seu alvo")
-            st.info("🚨 O quadrado abaixo deve conter APENAS o símbolo, sem pegar linhas vizinhas.")
+            st.subheader("3. Ajuste o recorte do seu alvo")
+            st.info("🚨 O quadrado abaixo deve conter APENAS o símbolo, cortando textos ou linhas vizinhas.")
             
             box_size = st.slider("Tamanho da área de captura", 5, 80, 20)
 
@@ -97,11 +130,14 @@ if uploaded_file:
                 st.image(cv2.cvtColor(template_color, cv2.COLOR_BGR2RGB), caption="Símbolo Capturado", width=150)
             
             with col_config:
-                threshold = st.slider("Precisão da Forma (0.90 = Idêntico)", 0.50, 0.99, 0.85, 0.01)
+                threshold = st.slider("Precisão da Forma (Baixe se o símbolo tiver letras por cima)", 0.50, 0.99, 0.85, 0.01)
 
-                if st.button("🔍 Procurar em Todos os Ângulos na Planta"):
-                    with st.spinner("Calculando geometria com Inteligência Leve..."):
+                if st.button("🔍 Procurar na área selecionada"):
+                    with st.spinner("A analisar geometria dentro da Região de Interesse..."):
                         
+                        x_r, y_r, w_r, h_r = roi_coords
+                        roi_gray = img_gray[y_r:y_r+h_r, x_r:x_r+w_r]
+
                         pontos = []
                         img_result = img_cv.copy() 
                         
@@ -115,14 +151,17 @@ if uploaded_file:
                         raio_seguranca = max(template_gray.shape[0], template_gray.shape[1]) / 2
 
                         for rot_template_gray in rotations_gray:
-                            res = cv2.matchTemplate(img_gray, rot_template_gray, cv2.TM_CCOEFF_NORMED)
+                            res = cv2.matchTemplate(roi_gray, rot_template_gray, cv2.TM_CCOEFF_NORMED)
                             loc = np.where(res >= threshold)
                             h_tmpl, w_tmpl = rot_template_gray.shape[:2]
                             
                             for pt in zip(*loc[::-1]):
-                                if not any(abs(pt[0]-p[0]) < raio_seguranca and abs(pt[1]-p[1]) < raio_seguranca for p in pontos):
-                                    pontos.append(pt)
-                                    cv2.rectangle(img_result, pt, (pt[0] + w_tmpl, pt[1] + h_tmpl), (0, 0, 255), 4)
+                                # Mapeia a coordenada da ROI de volta para a coordenada Global da imagem
+                                pt_global = (pt[0] + x_r, pt[1] + y_r)
+
+                                if not any(abs(pt_global[0]-p[0]) < raio_seguranca and abs(pt_global[1]-p[1]) < raio_seguranca for p in pontos):
+                                    pontos.append(pt_global)
+                                    cv2.rectangle(img_result, pt_global, (pt_global[0] + w_tmpl, pt_global[1] + h_tmpl), (0, 0, 255), 4)
                             
                             del res, loc
                             gc.collect()
@@ -141,27 +180,22 @@ if uploaded_file:
                         gc.collect()
 
         # ==========================================
-        # 4. RESULTADO E INTEGRAÇÃO AIRTABLE
+        # 5. RESULTADO E INTEGRAÇÃO AIRTABLE
         # ==========================================
         if st.session_state['mapa_resultado'] is not None:
-            st.success(f"✅ O robô encontrou {st.session_state['total_itens']} símbolos na prancha inteira!")
+            st.success(f"✅ O robô encontrou {st.session_state['total_itens']} símbolos na área isolada!")
             st.image(st.session_state['mapa_resultado'], use_container_width=True)
 
             st.markdown("---")
-            st.subheader("3. Refino e Busca no Banco de Dados 💰")
+            st.subheader("4. Busca no Banco de Dados 💰")
 
-            col_desc, col_busca = st.columns([1, 2])
+            col_busca, col_vazia = st.columns([2, 1])
             
-            with col_desc:
-                desconto = st.number_input("Descontar símbolos da legenda:", min_value=0, max_value=20, value=1)
-                total_final = max(0, st.session_state['total_itens'] - desconto)
-                st.info(f"Total real para orçamento: **{total_final} itens**")
-
             with col_busca:
-                product_search = st.text_input("Nome do produto no Airtable (ex: Interruptor)")
+                product_search = st.text_input("Nome do produto no Airtable (ex: Interruptor Simples)")
 
             if st.button("Buscar Preço no Airtable") and product_search:
-                with st.spinner("Consultando banco de dados..."):
+                with st.spinner("A consultar o banco de dados..."):
                     table_encoded = urllib.parse.quote(AIRTABLE_TABLE_NAME)
                     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{table_encoded}"
                     headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
@@ -188,11 +222,12 @@ if uploaded_file:
                             except:
                                 preco = 0.0
 
-                            total_orcamento = preco * total_final
+                            # Sem necessidade de descontar legenda graças ao Canvas!
+                            total_orcamento = preco * st.session_state['total_itens']
 
                             st.session_state['produto_atual'] = {
                                 "Produto": nome_real,
-                                "Quantidade": total_final,
+                                "Quantidade": st.session_state['total_itens'],
                                 "Preço Unitário (R$)": preco,
                                 "Subtotal (R$)": total_orcamento
                             }
@@ -201,9 +236,6 @@ if uploaded_file:
                     else:
                         st.error(f"Erro ao conectar com Airtable. Código: {response.status_code}")
 
-            # ==========================================
-            # 5. EXIBE O PRODUTO E O BOTÃO DE ADICIONAR
-            # ==========================================
             if st.session_state['produto_atual']:
                 prod = st.session_state['produto_atual']
                 st.success(f"Produto localizado: **{prod['Produto']}**")
@@ -217,11 +249,11 @@ if uploaded_file:
                 if st.button("🛒 Adicionar item ao Orçamento Geral", type="primary"):
                     st.session_state['carrinho'].append(prod)
                     st.session_state['produto_atual'] = None 
-                    st.success("Item adicionado com sucesso! Role a página para baixo para ver o Orçamento Geral.")
+                    st.success("✅ Item adicionado com sucesso! Desça a página para ver o Orçamento Geral.")
                     st.rerun() 
 
         # ==========================================
-        # 6. O CARRINHO DE ORÇAMENTO E EXCEL (TABELA FINAL)
+        # 6. O CARRINHO DE ORÇAMENTO E EXCEL 
         # ==========================================
         st.markdown("---")
         st.header("📋 Orçamento Geral do Projeto")
@@ -240,7 +272,6 @@ if uploaded_file:
             total_geral = df_carrinho["Subtotal (R$)"].sum()
             st.subheader(f"💰 CUSTO TOTAL: R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-            # --- A MÁGICA DO EXCEL ---
             col_excel, col_limpar = st.columns([1, 1])
             
             with col_excel:
@@ -249,7 +280,7 @@ if uploaded_file:
                     df_carrinho.to_excel(writer, index=False, sheet_name='Orçamento')
                 
                 st.download_button(
-                    label="📊 Baixar Orçamento em Excel",
+                    label="📊 Descarregar Orçamento em Excel",
                     data=buffer.getvalue(),
                     file_name="orcamento_projeto.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -261,7 +292,7 @@ if uploaded_file:
                     st.session_state['carrinho'] = []
                     st.rerun()
         else:
-            st.info("O seu carrinho está vazio. Escaneie os símbolos na planta e adicione-os aqui.")
+            st.info("O seu carrinho está vazio. Isole as áreas, conte os símbolos e adicione-os aqui.")
 
     except Exception as e:
         st.error(f"Ocorreu um erro no processamento: {e}")
