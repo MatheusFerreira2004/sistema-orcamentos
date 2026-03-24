@@ -14,13 +14,18 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # ==========================================
 # 1. CONFIGURAÇÃO
 # ==========================================
-st.set_page_config(layout="wide", page_title="Orçamento IA v2.3")
+st.set_page_config(layout="wide", page_title="Orçamento IA v2.4")
 
 def get_clean_secret(key_name):
     try:
         return st.secrets[key_name].strip().replace('"', '').replace("'", "")
     except:
         return None
+
+def pil_to_bytes(img):
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 AIRTABLE_API_KEY = get_clean_secret("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = get_clean_secret("AIRTABLE_BASE_ID")
@@ -66,10 +71,14 @@ if uploaded_file:
         Image.Resampling.LANCZOS
     )
 
+    # 🔥 CORREÇÃO DEFINITIVA
+    image_bytes = pil_to_bytes(image_display)
+    image_safe = Image.open(io.BytesIO(image_bytes))
+
     st.markdown("---")
 
     # ==========================================
-    # 3. ROI (SELEÇÃO DE ÁREA)
+    # 3. ROI
     # ==========================================
     st.subheader("1. Selecione a área de projeto (Ignore legendas)")
     st.info("💡 Desenhe um retângulo sobre a planta")
@@ -78,7 +87,7 @@ if uploaded_file:
         fill_color="rgba(255, 0, 0, 0.1)",
         stroke_width=2,
         stroke_color="#FF0000",
-        background_image=image_display,  # ✅ CORREÇÃO AQUI
+        background_image=image_safe,  # 🔥 AQUI ESTÁ O FIX
         update_streamlit=True,
         height=altura_canvas,
         width=largura_canvas,
@@ -101,7 +110,7 @@ if uploaded_file:
         st.success("Área selecionada com sucesso!")
 
     # ==========================================
-    # 4. CLIQUE NO SÍMBOLO
+    # 4. CLIQUE E DETECÇÃO
     # ==========================================
     if roi_coords:
         st.markdown("---")
@@ -210,7 +219,7 @@ if uploaded_file:
             st.success("Item adicionado!")
 
     # ==========================================
-    # 6. CARRINHO FINAL
+    # 6. CARRINHO
     # ==========================================
     if st.session_state['carrinho']:
 
