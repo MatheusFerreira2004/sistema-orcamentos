@@ -4,204 +4,129 @@ import numpy as np
 from PIL import Image
 import fitz
 import io
-import requests
-import urllib.parse
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# ==========================================
-# 1. CONFIGURAÇÃO INICIAL
-# ==========================================
-st.set_page_config(layout="wide", page_title="Orçamento IA - Goiânia")
+st.set_page_config(layout="wide")
+st.title("IA de Orçamento Inteligente 🚀")
 
-def get_clean_secret(key_name):
-    try:
-        return st.secrets[key_name].strip().replace('"', '').replace("'", "")
-    except:
-        return None
+# MEMÓRIA DE SÍMBOLOS
+if "symbols" not in st.session_state:
+    st.session_state["symbols"] = []
 
-AIRTABLE_API_KEY = get_clean_secret("AIRTABLE_API_KEY")
-AIRTABLE_BASE_ID = get_clean_secret("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = get_clean_secret("AIRTABLE_TABLE_NAME")
-
-st.title("Sistema de Orçamento Automatizado - IA 🚀")
-
-if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
-    st.error("⚠️ Erro: Chaves do Airtable não encontradas nos Secrets.")
-    st.stop()
-
-if 'total_itens' not in st.session_state:
-    st.session_state['total_itens'] = 0
-if 'mapa_resultado' not in st.session_state:
-    st.session_state['mapa_resultado'] = None
-
-# ==========================================
-# 2. UPLOAD E REDIMENSIONAMENTO (O Zoom Responsivo)
-# ==========================================
-uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Suba a planta", type=["pdf","png","jpg","jpeg"])
 
 if uploaded_file:
-    try:
-        if uploaded_file.name.lower().endswith(".pdf"):
-            with st.spinner("Processando PDF em alta resolução..."):
-                doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                page = doc.load_page(0)
-                pix = page.get_pixmap(matrix=fitz.Matrix(6, 6))
-                image_high_res = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-        else:
-            image_high_res = Image.open(uploaded_file).convert("RGB")
 
-        st.markdown("---")
-        st.subheader("1. Clique no símbolo que deseja contar na planta abaixo:")
-        
-        # --- Evita que a imagem quebre a tela, mas mantém a alta resolução para o robô ---
-        largura_tela = 1000 
-        fator_escala = largura_tela / float(image_high_res.size[0])
-        altura_tela = int(float(image_high_res.size[1]) * float(fator_escala))
-        image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
+    if uploaded_file.name.endswith(".pdf"):
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(6,6))
+        image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+    else:
+        image = Image.open(uploaded_file).convert("RGB")
 
-        # ==========================================
-        # 3. CAPTURA DE COORDENADA E COR (Média Segura)
-        # ==========================================
-        coords = streamlit_image_coordinates(image_display, key="mapa_clique")
+    # ZOOM
+    zoom = st.slider("Zoom", 0.5, 2.5, 1.5)
+    image_disp = image.resize(
+        (int(image.width*zoom), int(image.height*zoom)),
+        Image.Resampling.LANCZOS
+    )
 
-        if coords:
-            # Converte clique da tela para a imagem gigante
-            x_real = int(coords["x"] / fator_escala)
-            y_real = int(coords["y"] / fator_escala)
+    coords = streamlit_image_coordinates(image_disp)
 
-            img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-            # Usa a "Média de Cor" do código novo, que é uma ideia excelente para evitar pegar um pixel preto por acidente
-            region = img_cv[max(0, y_real-5):min(img_cv.shape[0], y_real+5), max(0, x_real-5):min(img_cv.shape[1], x_real+5)]
-            avg_color = np.mean(region, axis=(0,1)).astype(int)
+    # =====================================
+    # APRENDER NOVO SÍMBOLO
+    # =====================================
+    st.subheader("1. Ensinar símbolo")
 
-            pixel = np.uint8([[avg_color]])
-            hsv_pixel = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)
+    nome = st.text_input("Nome do símbolo (ex: Embutido)")
 
-            h, s, v = int(hsv_pixel[0][0][0]), int(hsv_pixel[0][0][1]), int(hsv_pixel[0][0][2])
+    if coords and st.button("Salvar símbolo"):
+        x = int(coords["x"]/zoom)
+        y = int(coords["y"]/zoom)
 
-            st.write(f"🎨 HSV detectado (Média 10x10px): H={h}, S={s}, V={v}")
+        region = img_cv[y-5:y+5, x-5:x+5]
+        avg = np.mean(region, axis=(0,1)).astype(int)
 
-            # ==========================================
-            # 4. PAINEL DE AJUSTES (OS SLIDERS VOLTARAM!)
-            # ==========================================
-            st.subheader("2. Ajustes da detecção geométrica")
-            st.info("💡 **Dica para perfis de LED:** Se for um item longo, aumente a **Área máxima** e a **Proporção máxima**.")
+        hsv = cv2.cvtColor(np.uint8([[avg]]), cv2.COLOR_BGR2HSV)
+        h,s,v = map(int, hsv[0][0])
 
-            col1, col2 = st.columns(2)
-            with col1:
-                h_range = st.slider("Range de Hue (Tolerância de Cor)", 5, 40, 15) # Aumentei o padrão para 15
-                s_min = st.slider("Saturação mínima (Ignora cinza)", 0, 255, 40) # Baixei para 40
-                v_min = st.slider("Valor mínimo (Ignora escuro)", 0, 255, 40)
-            with col2:
-                min_area = st.slider("Área mínima (Poeira)", 10, 500, 80)
-                max_area = st.slider("Área máxima (Legendas/Blocos)", 100, 15000, 1500) # Limite bem maior para perfis
-                ratio_min = st.slider("Proporção mínima (larg/alt)", 0.1, 1.0, 0.3) # Começa menor
-                ratio_max = st.slider("Proporção máxima (larg/alt)", 1.0, 20.0, 5.0) # Permite itens longos (perfil led)
-                extent_min = st.slider("Preenchimento mínimo", 0.1, 1.0, 0.4)
+        st.session_state["symbols"].append({
+            "name": nome,
+            "h": h,
+            "range": 15,
+            "min_area": 100,
+            "max_area": 600
+        })
 
-            lower = np.array([max(0, h - h_range), s_min, v_min])
-            upper = np.array([min(179, h + h_range), 255, 255])
+        st.success(f"Símbolo '{nome}' salvo!")
 
-            if st.button("🔍 Detectar símbolos de forma inteligente"):
-                with st.spinner("Analisando com Inteligência de Contornos..."):
+    # =====================================
+    # LISTA DE SÍMBOLOS
+    # =====================================
+    st.subheader("Símbolos cadastrados")
 
-                    hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-                    mask = cv2.inRange(hsv, lower, upper)
+    for s in st.session_state["symbols"]:
+        st.write(s)
 
-                    kernel = np.ones((3,3), np.uint8)
-                    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-                    mask = cv2.dilate(mask, kernel, iterations=1)
+    # =====================================
+    # DETECTAR TODOS
+    # =====================================
+    if st.button("🔍 Detectar tudo automaticamente"):
 
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        hsv_img = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
+        result = img_cv.copy()
 
-                    count = 0
-                    img_result = img_cv.copy()
+        total_geral = {}
 
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
+        # remover linhas
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        lines = cv2.HoughLinesP(gray,1,np.pi/180,100,minLineLength=100,maxLineGap=10)
 
-                        if area < min_area or area > max_area:
-                            continue
+        mask_global = np.zeros(gray.shape, dtype=np.uint8)
 
-                        x_box, y_box, w_box, h_box = cv2.boundingRect(cnt)
+        if lines is not None:
+            for line in lines:
+                x1,y1,x2,y2 = line[0]
+                cv2.line(mask_global,(x1,y1),(x2,y2),255,10)
 
-                        if h_box == 0:
-                            continue
-                            
-                        # A Proporção agora aceita itens compridos (se você ajustar no slider)
-                        ratio = float(w_box) / float(h_box)
-                        # Para perfis longos, o w pode ser menor que o h (linha vertical), então verificamos os dois lados
-                        ratio_invertido = float(h_box) / float(w_box)
-                        
-                        if not ((ratio_min < ratio < ratio_max) or (ratio_min < ratio_invertido < ratio_max)):
-                            continue
+        for symbol in st.session_state["symbols"]:
 
-                        rect_area = w_box * h_box
-                        if rect_area == 0:
-                            continue
-                            
-                        extent = float(area) / float(rect_area)
-                        if extent < extent_min:
-                            continue
+            lower = np.array([max(0, symbol["h"]-symbol["range"]), 50, 50])
+            upper = np.array([min(179, symbol["h"]+symbol["range"]), 255, 255])
 
-                        count += 1
-                        cv2.rectangle(img_result, (x_box, y_box), (x_box+w_box, y_box+h_box), (0, 0, 255), 6)
+            mask = cv2.inRange(hsv_img, lower, upper)
 
-                    st.session_state['total_itens'] = count
-                    st.session_state['mapa_resultado'] = cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB)
+            # remover linhas da máscara
+            mask = cv2.bitwise_and(mask, cv2.bitwise_not(mask_global))
 
-        # ==========================================
-        # 5. RESULTADO E INTEGRAÇÃO AIRTABLE
-        # ==========================================
-        if st.session_state['mapa_resultado'] is not None:
-            st.success(f"✅ Encontrados {st.session_state['total_itens']} itens legítimos!")
-            st.image(st.session_state['mapa_resultado'], use_column_width=True)
+            kernel = np.ones((5,5), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, 2)
 
-            st.markdown("---")
-            st.subheader("3. Gerar Orçamento 💰")
+            contours,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            product_search = st.text_input("Nome do produto no Airtable (ex: Spot Embutido)")
+            count = 0
 
-            if st.button("Calcular Orçamento") and product_search:
-                with st.spinner("Consultando banco de dados..."):
-                    table_encoded = urllib.parse.quote(AIRTABLE_TABLE_NAME)
-                    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{table_encoded}"
-                    headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
 
-                    response = requests.get(url, headers=headers)
+                if area < symbol["min_area"] or area > symbol["max_area"]:
+                    continue
 
-                    if response.status_code == 200:
-                        records = response.json().get("records", [])
-                        found = None
-                        search_term = product_search.lower().strip()
+                x,y,w,h = cv2.boundingRect(cnt)
 
-                        for record in records:
-                            nome = record.get("fields", {}).get("Nome", "")
-                            if search_term in nome.lower():
-                                found = record
-                                break
+                aspect = max(w,h)/(min(w,h)+1)
+                if aspect > 3:
+                    continue
 
-                        if found:
-                            nome_real = found["fields"].get("Nome", "Produto")
-                            preco_str = found["fields"].get("Preco", found["fields"].get("Preço", 0))
+                count += 1
+                cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),3)
+                cv2.putText(result, symbol["name"], (x,y-5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0),1)
 
-                            try:
-                                preco = float(preco_str)
-                            except:
-                                preco = 0.0
+            total_geral[symbol["name"]] = count
 
-                            total = preco * st.session_state['total_itens']
-
-                            st.success(f"Produto localizado: **{nome_real}**")
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Preço Unitário (R$)", f"{preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                            col2.metric("Quantidade na Planta", st.session_state['total_itens'])
-                            col3.metric("Total Estimado (R$)", f"{total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                        else:
-                            st.warning(f"❌ Produto '{product_search}' não encontrado na tabela.")
-                    else:
-                        st.error(f"Erro ao conectar com Airtable. Código: {response.status_code}")
-
-    except Exception as e:
-        st.error(f"Ocorreu um erro no processamento: {e}")
+        st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+        st.success(total_geral)
