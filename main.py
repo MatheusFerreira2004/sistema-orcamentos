@@ -6,14 +6,13 @@ import fitz
 import io
 import requests
 import urllib.parse
+import gc
 import pandas as pd
-from streamlit_drawable_canvas import st_canvas
-from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ==========================================
-# CONFIG
+# 1. CONFIGURAÇÃO E SECRETS
 # ==========================================
-st.set_page_config(layout="wide", page_title="Orçamento IA v2.5")
+st.set_page_config(layout="wide", page_title="Orçamento IA - Alta Precisão")
 
 def get_clean_secret(key_name):
     try:
@@ -25,178 +24,121 @@ AIRTABLE_API_KEY = get_clean_secret("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = get_clean_secret("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = get_clean_secret("AIRTABLE_TABLE_NAME")
 
-# SESSION
-if 'total_itens' not in st.session_state:
-    st.session_state['total_itens'] = 0
-if 'mapa_resultado' not in st.session_state:
-    st.session_state['mapa_resultado'] = None
 if 'carrinho' not in st.session_state:
     st.session_state['carrinho'] = []
 
 st.title("Sistema de Orçamento Automatizado - IA 🚀")
 
 # ==========================================
-# UPLOAD
+# 2. UPLOAD E CONVERSÃO
 # ==========================================
-uploaded_file = st.file_uploader("Suba a sua Planta", type=["pdf", "jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Suba a sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
 if uploaded_file:
-
-    if 'img_high' not in st.session_state or st.session_state.get('last_file') != uploaded_file.name:
+    try:
         if uploaded_file.name.lower().endswith(".pdf"):
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            page = doc.load_page(0)
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            st.session_state['img_high'] = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-            doc.close()
+            with st.spinner("Lendo PDF de alta resolução..."):
+                doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                page = doc.load_page(0)
+                pix = page.get_pixmap(matrix=fitz.Matrix(3, 3)) # Aumentamos a escala para 3x para mais precisão
+                img_pil = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                doc.close()
         else:
-            st.session_state['img_high'] = Image.open(uploaded_file).convert("RGB")
+            img_pil = Image.open(uploaded_file).convert("RGB")
 
-        st.session_state['last_file'] = uploaded_file.name
+        # Preparação das imagens
+        img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-    image_high_res = st.session_state['img_high']
+        st.info("💡 Como usar: 1. Clique no símbolo na planta. 2. Ajuste a precisão. 3. Clique em Contar.")
 
-    largura = 1000
-    fator = largura / image_high_res.size[0]
-    altura = int(image_high_res.size[1] * fator)
+        # Exibição para o clique
+        largura_display = 1200
+        fator = largura_display / img_pil.size[0]
+        altura_display = int(img_pil.size[1] * fator)
+        img_res = img_pil.resize((largura_display, altura_display), Image.Resampling.LANCZOS)
 
-    image_display = image_high_res.resize((largura, altura), Image.Resampling.LANCZOS)
-
-    st.markdown("---")
-
-    # ==========================================
-    # ROI VISUAL + CANVAS
-    # ==========================================
-    st.subheader("1. Selecione a área da planta")
-    st.info("💡 Primeiro olhe a imagem. Depois desenhe o retângulo EXATAMENTE na mesma posição abaixo.")
-
-    # imagem visível
-    st.image(image_display, use_container_width=True)
-
-    st.markdown("### ✏️ Agora desenhe aqui (mesma posição da imagem acima)")
-
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 0, 0, 0.15)",
-        stroke_width=2,
-        stroke_color="#FF0000",
-        background_color="rgba(0,0,0,0)",
-        update_streamlit=True,
-        height=altura,
-        width=largura,
-        drawing_mode="rect",
-        key="canvas_ok",
-    )
-
-    roi_coords = None
-
-    if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
-        rect = canvas_result.json_data["objects"][-1]
-
-        roi_coords = (
-            int(rect["left"] / fator),
-            int(rect["top"] / fator),
-            int(rect["width"] / fator),
-            int(rect["height"] / fator)
-        )
-
-        st.success("Área selecionada!")
-
-    # ==========================================
-    # CLIQUE + DETECÇÃO
-    # ==========================================
-    if roi_coords:
-        st.markdown("---")
-        st.subheader("2. Clique no símbolo")
-
-        coords = streamlit_image_coordinates(image_display, key="click")
+        from streamlit_image_coordinates import streamlit_image_coordinates
+        coords = streamlit_image_coordinates(img_res, key="clique")
 
         if coords:
             x_real = int(coords["x"] / fator)
             y_real = int(coords["y"] / fator)
 
-            img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
-            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            # Recorte do Template (Alvo)
+            box = 30
+            y1, y2 = max(0, y_real-box), min(img_cv.shape[0], y_real+box)
+            x1, x2 = max(0, x_real-box), min(img_cv.shape[1], x_real+box)
+            template_gray = img_gray[y1:y2, x1:x2]
 
-            box = 25
-            template = gray[
-                max(0, y_real-box):y_real+box,
-                max(0, x_real-box):x_real+box
-            ]
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                st.image(cv2.cvtColor(img_cv[y1:y2, x1:x2], cv2.COLOR_BGR2RGB), caption="Símbolo Alvo", width=100)
+            
+            with col2:
+                threshold = st.slider("Sensibilidade do Robô (0.80 é o ideal)", 0.50, 0.98, 0.80, 0.01)
+                
+                if st.button("🔍 Iniciar Contagem em Toda a Planta", type="primary"):
+                    with st.spinner("O robô está analisando cada pixel da planta..."):
+                        pontos = []
+                        # Motor de Rotação 360º para detectar símbolos em qualquer posição
+                        for angulo in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+                            t = template_gray if angulo is None else cv2.rotate(template_gray, angulo)
+                            res = cv2.matchTemplate(img_gray, t, cv2.TM_CCOEFF_NORMED)
+                            loc = np.where(res >= threshold)
+                            
+                            raio_exclusao = max(t.shape) / 2
+                            for pt in zip(*loc[::-1]):
+                                if not any(abs(pt[0]-p[0]) < raio_exclusao and abs(pt[1]-p[1]) < raio_exclusao for p in pontos):
+                                    pontos.append(pt)
+                                    cv2.rectangle(img_cv, pt, (pt[0] + t.shape[1], pt[1] + t.shape[0]), (0, 0, 255), 3)
 
-            st.image(
-                cv2.cvtColor(img_cv[y_real-box:y_real+box, x_real-box:x_real+box], cv2.COLOR_BGR2RGB),
-                width=80,
-                caption="Símbolo"
-            )
+                        st.success(f"✅ Sucesso! Encontrados {len(pontos)} itens.")
+                        
+                        # Resultado Visual
+                        res_final = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                        st.image(res_final, caption="Mapa de Detecção", use_container_width=True)
 
-            threshold = st.slider("Sensibilidade", 0.5, 0.95, 0.8)
+                        # Integração Airtable
+                        st.markdown("---")
+                        nome_busca = st.text_input("Qual o nome deste item no seu Catálogo do Airtable?")
+                        
+                        if st.button("💰 Consultar Preço e Adicionar ao Orçamento") and nome_busca:
+                            headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
+                            url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{urllib.parse.quote(AIRTABLE_TABLE_NAME)}"
+                            
+                            try:
+                                r = requests.get(url, headers=headers).json()
+                                preco = 0.0
+                                nome_real = nome_busca
+                                
+                                for rec in r.get('records', []):
+                                    if nome_busca.lower() in rec['fields'].get('Nome', '').lower():
+                                        preco = float(rec['fields'].get('Preco', 0))
+                                        nome_real = rec['fields'].get('Nome', nome_busca)
+                                        break
+                                
+                                st.session_state['carrinho'].append({
+                                    "Produto": nome_real,
+                                    "Quantidade": len(pontos),
+                                    "Preço Unitário": preco,
+                                    "Total": preco * len(pontos)
+                                })
+                                st.success(f"Item {nome_real} adicionado!")
+                            except:
+                                st.error("Erro ao conectar com o Airtable.")
 
-            if st.button("🔍 Contar símbolos"):
-                xr, yr, wr, hr = roi_coords
-                roi = gray[yr:yr+hr, xr:xr+wr]
+        # Tabela de Orçamento Final
+        if st.session_state['carrinho']:
+            st.markdown("---")
+            st.header("📋 Orçamento Consolidado")
+            df = pd.DataFrame(st.session_state['carrinho'])
+            st.dataframe(df, use_container_width=True)
+            
+            total_geral = df["Total"].sum()
+            st.subheader(f"Custo Total: R$ {total_geral:,.2f}")
+            
+            st.download_button("📥 Baixar Excel", df.to_csv(index=False).encode('utf-8'), "orcamento_ia.csv", "text/csv")
 
-                pontos = []
-
-                for rot in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-                    t = template if rot is None else cv2.rotate(template, rot)
-                    res = cv2.matchTemplate(roi, t, cv2.TM_CCOEFF_NORMED)
-                    loc = np.where(res >= threshold)
-
-                    raio = max(t.shape) / 2
-
-                    for pt in zip(*loc[::-1]):
-                        ptg = (pt[0]+xr, pt[1]+yr)
-
-                        if not any(abs(ptg[0]-p[0]) < raio and abs(ptg[1]-p[1]) < raio for p in pontos):
-                            pontos.append(ptg)
-                            cv2.rectangle(img_cv, ptg, (ptg[0]+t.shape[1], ptg[1]+t.shape[0]), (0,0,255), 3)
-
-                st.session_state['total_itens'] = len(pontos)
-
-                img_small = cv2.resize(img_cv, (1000, int(img_cv.shape[0]*(1000/img_cv.shape[1]))))
-                st.session_state['mapa_resultado'] = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
-
-                st.rerun()
-
-    # ==========================================
-    # RESULTADO + ORÇAMENTO
-    # ==========================================
-    if st.session_state['mapa_resultado'] is not None:
-        st.image(st.session_state['mapa_resultado'])
-        st.success(f"Quantidade: {st.session_state['total_itens']}")
-
-        nome = st.text_input("Produto")
-
-        if st.button("Adicionar") and nome:
-            headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
-            url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{urllib.parse.quote(AIRTABLE_TABLE_NAME)}"
-
-            data = requests.get(url, headers=headers).json()
-
-            preco = next(
-                (float(r['fields'].get('Preco', 0)) for r in data['records']
-                 if nome.lower() in r['fields'].get('Nome', '').lower()),
-                0
-            )
-
-            st.session_state['carrinho'].append({
-                "Item": nome,
-                "Qtd": st.session_state['total_itens'],
-                "Unitário": preco,
-                "Total": preco * st.session_state['total_itens']
-            })
-
-    # ==========================================
-    # CARRINHO
-    # ==========================================
-    if st.session_state['carrinho']:
-        st.markdown("---")
-        df = pd.DataFrame(st.session_state['carrinho'])
-        st.table(df)
-
-        st.download_button(
-            "📥 Baixar CSV",
-            df.to_csv(index=False).encode(),
-            "orcamento.csv",
-            "text/csv"
-        )
+    except Exception as e:
+        st.error(f"Erro de processamento: {e}")
