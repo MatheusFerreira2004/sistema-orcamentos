@@ -4,198 +4,213 @@ import numpy as np
 from PIL import Image
 import fitz
 import io
+import requests
+import urllib.parse
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# ================================
-# CONFIG
-# ================================
-st.set_page_config(layout="wide")
-st.title("Sistema Inteligente de Leitura de Plantas 🚀")
+# ==========================================
+# 1. CONFIGURAÇÃO INICIAL
+# ==========================================
+st.set_page_config(layout="wide", page_title="Orçamento IA - Goiânia")
 
-# ================================
-# MEMÓRIA
-# ================================
-if "boxes" not in st.session_state:
-    st.session_state["boxes"] = []
+def get_clean_secret(key_name):
+    try:
+        return st.secrets[key_name].strip().replace('"', '').replace("'", "")
+    except:
+        return None
 
-if "pre_map_img" not in st.session_state:
-    st.session_state["pre_map_img"] = None
+AIRTABLE_API_KEY = get_clean_secret("AIRTABLE_API_KEY")
+AIRTABLE_BASE_ID = get_clean_secret("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE_NAME = get_clean_secret("AIRTABLE_TABLE_NAME")
 
-if "result_img" not in st.session_state:
-    st.session_state["result_img"] = None
+st.title("Sistema de Orçamento Automatizado - IA 🚀")
 
-if "click" not in st.session_state:
-    st.session_state["click"] = None
+if not AIRTABLE_API_KEY or not AIRTABLE_BASE_ID:
+    st.error("⚠️ Erro: Chaves do Airtable não encontradas nos Secrets.")
+    st.stop()
 
-# ================================
-# UPLOAD
-# ================================
-uploaded_file = st.file_uploader("Suba sua planta", type=["pdf","png","jpg","jpeg"])
+if 'total_itens' not in st.session_state:
+    st.session_state['total_itens'] = 0
+if 'mapa_resultado' not in st.session_state:
+    st.session_state['mapa_resultado'] = None
+
+# ==========================================
+# 2. UPLOAD E ALTA RESOLUÇÃO (MATRIX 6)
+# ==========================================
+uploaded_file = st.file_uploader("Suba sua Planta (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
 if uploaded_file:
+    try:
+        if uploaded_file.name.lower().endswith(".pdf"):
+            with st.spinner("Processando PDF em alta resolução..."):
+                doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                page = doc.load_page(0)
+                # VOLTAMOS PARA 6x6 PARA NÃO PIXELAR!
+                pix = page.get_pixmap(matrix=fitz.Matrix(6, 6))
+                image_high_res = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        else:
+            image_high_res = Image.open(uploaded_file).convert("RGB")
 
-    # ================================
-    # CARREGAR IMAGEM (QUALIDADE BOA SEM EXAGERO)
-    # ================================
-    if uploaded_file.name.endswith(".pdf"):
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(3,3))  # 🔥 equilíbrio ideal
-        image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-    else:
-        image = Image.open(uploaded_file).convert("RGB")
+        st.markdown("---")
+        st.subheader("1. Clique no símbolo que deseja contar na planta abaixo:")
+        st.info("A planta se ajustará à sua tela automaticamente. Clique no centro da cor.")
+        
+        # --- A MÁGICA DA TELA RESPONSIVA ---
+        largura_tela = 1000 
+        fator_escala = largura_tela / float(image_high_res.size[0])
+        altura_tela = int(float(image_high_res.size[1]) * float(fator_escala))
+        image_display = image_high_res.resize((largura_tela, altura_tela), Image.Resampling.LANCZOS)
 
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        # ==========================================
+        # 3. CAPTURA DE COORDENADA (A PRÉ-VISUALIZAÇÃO AQUI)
+        # ==========================================
+        coords = streamlit_image_coordinates(image_display, key="mapa_clique")
 
-    # ================================
-    # EXIBIÇÃO SEM CORTE (FIXA E NÍTIDA)
-    # ================================
-    st.subheader("1. Visualização da planta")
+        if coords:
+            # Converte clique da tela para a imagem gigante
+            x_real = int(coords["x"] / fator_escala)
+            y_real = int(coords["y"] / fator_escala)
 
-    # largura fixa (NÃO corta)
-    max_width = 1400
-    scale = min(max_width / image.width, 1.0)
+            img_cv = cv2.cvtColor(np.array(image_high_res), cv2.COLOR_RGB2BGR)
 
-    display_w = int(image.width * scale)
-    display_h = int(image.height * scale)
+            # Extrai a cor usando uma pequena média para não pegar linha preta
+            region = img_cv[max(0, y_real-5):min(img_cv.shape[0], y_real+5), max(0, x_real-5):min(img_cv.shape[1], x_real+5)]
+            avg_color = np.mean(region, axis=(0,1)).astype(int)
 
-    image_display = image.resize(
-        (display_w, display_h),
-        Image.Resampling.LANCZOS
-    )
+            pixel = np.uint8([[avg_color]])
+            hsv_pixel = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)
+            h, s, v = int(hsv_pixel[0][0][0]), int(hsv_pixel[0][0][1]), int(hsv_pixel[0][0][2])
 
-    coords = streamlit_image_coordinates(image_display, key="map")
+            # --- O NOVO RECURSO DE PRÉ-VISUALIZAÇÃO DO ALVO ---
+            col_target, col_info = st.columns([1, 4])
+            with col_target:
+                # Recorta um quadrado de 100x100 ao redor de onde você clicou para você ter certeza
+                box_size = 50
+                y1, y2 = max(0, y_real-box_size), min(img_cv.shape[0], y_real+box_size)
+                x1, x2 = max(0, x_real-box_size), min(img_cv.shape[1], x_real+box_size)
+                alvo_img = img_cv[y1:y2, x1:x2]
+                st.image(cv2.cvtColor(alvo_img, cv2.COLOR_BGR2RGB), caption="Seu Alvo", width=100)
+            
+            with col_info:
+                st.write(f"**Coordenada:** {x_real}, {y_real}")
+                st.write(f"🎨 **Cor HSV Capturada:** H={h}, S={s}, V={v}")
 
-    st.image(image_display)  # 🔥 SEM use_container_width
+            # ==========================================
+            # 4. PAINEL DE AJUSTES (O NOSSO MOTOR ESTÁVEL)
+            # ==========================================
+            st.subheader("2. Ajustes da detecção geométrica")
 
-    # ================================
-    # SALVAR CLIQUE
-    # ================================
-    if coords:
-        x_real = int(coords["x"] / scale)
-        y_real = int(coords["y"] / scale)
+            col1, col2 = st.columns(2)
+            with col1:
+                h_range = st.slider("Tolerância de Cor (Hue)", 5, 40, 15)
+                s_min = st.slider("Ignorar cinza (Sat Mínima)", 0, 255, 40)
+                v_min = st.slider("Ignorar escuro (Val Mínimo)", 0, 255, 40)
+            with col2:
+                min_area = st.slider("Área mínima (Poeira)", 10, 500, 80)
+                max_area = st.slider("Área máxima (Legendas)", 100, 15000, 1500)
+                ratio_min = st.slider("Proporção mínima (larg/alt)", 0.1, 1.0, 0.3)
+                ratio_max = st.slider("Proporção máxima (larg/alt)", 1.0, 20.0, 5.0)
+                extent_min = st.slider("Preenchimento mínimo", 0.1, 1.0, 0.4)
 
-        st.session_state["click"] = (x_real, y_real)
-        st.success(f"Clique salvo: {x_real}, {y_real}")
+            lower = np.array([max(0, h - h_range), s_min, v_min])
+            upper = np.array([min(179, h + h_range), 255, 255])
 
-    # ================================
-    # PRÉ-MAPEAMENTO
-    # ================================
-    st.subheader("2. Pré-mapeamento")
+            if st.button("🔍 Iniciar Varredura de Cor na Planta"):
+                with st.spinner("Analisando com Inteligência de Cores e Contornos..."):
 
-    if st.button("🔍 Mapear elementos"):
+                    hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
+                    mask = cv2.inRange(hsv, lower, upper)
 
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                    kernel = np.ones((3,3), np.uint8)
+                    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+                    mask = cv2.dilate(mask, kernel, iterations=1)
 
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        kernel = np.ones((3,3), np.uint8)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, 1)
+                    count = 0
+                    img_result = img_cv.copy()
 
-        # remover linhas longas
-        lines = cv2.HoughLinesP(gray,1,np.pi/180,100,minLineLength=120,maxLineGap=10)
+                    for cnt in contours:
+                        area = cv2.contourArea(cnt)
+                        if area < min_area or area > max_area:
+                            continue
 
-        if lines is not None:
-            for line in lines:
-                x1,y1,x2,y2 = line[0]
-                cv2.line(thresh,(x1,y1),(x2,y2),0,10)
+                        x_box, y_box, w_box, h_box = cv2.boundingRect(cnt)
+                        if h_box == 0:
+                            continue
+                            
+                        ratio = float(w_box) / float(h_box)
+                        ratio_invertido = float(h_box) / float(w_box)
+                        
+                        if not ((ratio_min < ratio < ratio_max) or (ratio_min < ratio_invertido < ratio_max)):
+                            continue
 
-        contours,_ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        rect_area = w_box * h_box
+                        if rect_area == 0:
+                            continue
+                            
+                        extent = float(area) / float(rect_area)
+                        if extent < extent_min:
+                            continue
 
-        boxes = []
-        result = img_cv.copy()
+                        count += 1
+                        cv2.rectangle(img_result, (x_box, y_box), (x_box+w_box, y_box+h_box), (0, 0, 255), 6)
 
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
+                    st.session_state['total_itens'] = count
+                    st.session_state['mapa_resultado'] = cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB)
 
-            if area < 80 or area > 2000:
-                continue
+        # ==========================================
+        # 5. RESULTADO E INTEGRAÇÃO AIRTABLE
+        # ==========================================
+        if st.session_state['mapa_resultado'] is not None:
+            st.success(f"✅ Encontrados {st.session_state['total_itens']} itens legítimos!")
+            # AQUI ESTÁ A CORREÇÃO DE CORTE: use_container_width=True
+            st.image(st.session_state['mapa_resultado'], use_container_width=True)
 
-            x,y,w,h = cv2.boundingRect(cnt)
+            st.markdown("---")
+            st.subheader("3. Gerar Orçamento 💰")
 
-            aspect = max(w,h)/(min(w,h)+1)
-            if aspect > 4:
-                continue
+            product_search = st.text_input("Nome do produto no Airtable (ex: Spot Embutido)")
 
-            # ignorar legenda (parte inferior)
-            if y > img_cv.shape[0] * 0.85:
-                continue
+            if st.button("Calcular Orçamento") and product_search:
+                with st.spinner("Consultando banco de dados..."):
+                    table_encoded = urllib.parse.quote(AIRTABLE_TABLE_NAME)
+                    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{table_encoded}"
+                    headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
 
-            boxes.append((x,y,w,h))
+                    response = requests.get(url, headers=headers)
 
-            cv2.rectangle(result,(x,y),(x+w,y+h),(0,0,255),2)
+                    if response.status_code == 200:
+                        records = response.json().get("records", [])
+                        found = None
+                        search_term = product_search.lower().strip()
 
-        st.session_state["boxes"] = boxes
+                        for record in records:
+                            nome = record.get("fields", {}).get("Nome", "")
+                            if search_term in nome.lower():
+                                found = record
+                                break
 
-        result_small = cv2.resize(
-            result,
-            (display_w, display_h)
-        )
+                        if found:
+                            nome_real = found["fields"].get("Nome", "Produto")
+                            preco_str = found["fields"].get("Preco", found["fields"].get("Preço", 0))
 
-        st.session_state["pre_map_img"] = result_small
+                            try:
+                                preco = float(preco_str)
+                            except:
+                                preco = 0.0
 
-        st.success(f"{len(boxes)} elementos detectados")
+                            total = preco * st.session_state['total_itens']
 
-    # ================================
-    # MOSTRAR PRÉ-MAPEAMENTO
-    # ================================
-    if st.session_state["pre_map_img"] is not None:
-        st.image(cv2.cvtColor(st.session_state["pre_map_img"], cv2.COLOR_BGR2RGB))
+                            st.success(f"Produto localizado: **{nome_real}**")
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Preço Unitário (R$)", f"{preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                            col2.metric("Quantidade na Planta", st.session_state['total_itens'])
+                            col3.metric("Total Estimado (R$)", f"{total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                        else:
+                            st.warning(f"❌ Produto '{product_search}' não encontrado na tabela.")
+                    else:
+                        st.error(f"Erro ao conectar com Airtable. Código: {response.status_code}")
 
-    # ================================
-    # DETECÇÃO POR SIMILARIDADE
-    # ================================
-    st.subheader("3. Detectar iguais")
-
-    if st.session_state["click"] and st.session_state["boxes"]:
-
-        if st.button("🎯 Detectar iguais ao clicado"):
-
-            x_click, y_click = st.session_state["click"]
-
-            selected_box = None
-
-            for (x,y,w,h) in st.session_state["boxes"]:
-                if x < x_click < x+w and y < y_click < y+h:
-                    selected_box = (x,y,w,h)
-                    break
-
-            if selected_box:
-
-                x_ref, y_ref, w_ref, h_ref = selected_box
-
-                result = img_cv.copy()
-                count = 0
-
-                for (x,y,w,h) in st.session_state["boxes"]:
-
-                    if abs(w - w_ref) > 10:
-                        continue
-
-                    if abs(h - h_ref) > 10:
-                        continue
-
-                    ratio1 = w / (h+1)
-                    ratio2 = w_ref / (h_ref+1)
-
-                    if abs(ratio1 - ratio2) > 0.3:
-                        continue
-
-                    count += 1
-
-                    cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),3)
-
-                result_small = cv2.resize(result, (display_w, display_h))
-
-                st.session_state["result_img"] = result_small
-
-                st.success(f"{count} itens encontrados")
-
-            else:
-                st.warning("Clique não corresponde a um símbolo")
-
-    # ================================
-    # RESULTADO FINAL
-    # ================================
-    if st.session_state["result_img"] is not None:
-        st.image(cv2.cvtColor(st.session_state["result_img"], cv2.COLOR_BGR2RGB))
+    except Exception as e:
+        st.error(f"Ocorreu um erro no processamento: {e}")
